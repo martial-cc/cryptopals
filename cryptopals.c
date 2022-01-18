@@ -23,6 +23,7 @@ DEALINGS IN THE SOFTWARE.
 */
 
 #include <assert.h>
+#include <ctype.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -38,6 +39,7 @@ DEALINGS IN THE SOFTWARE.
 #define B64(i) (b64[B64_LIM - 1 & i])
 
 enum nbyte_fmt {
+	FMT_ASC,
 	FMT_B64,
 	FMT_HEX,
 };
@@ -55,11 +57,17 @@ int nbyte_init(Nbyte *);
 int nbyte_decode(Nbyte *, const unsigned char *, enum nbyte_fmt);
 int nbyte_encode(unsigned char *, size_t, const Nbyte *, enum nbyte_fmt);
 
+int nbyte_freq(size_t *, Nbyte *);
+int nbyte_xor(Nbyte *, Nbyte *, Nbyte *);
+int nbyte_xorc(Nbyte *, Nbyte *, char);
+
+int asc_encode(unsigned char *, size_t, const Nbyte *);
 int b64_encode(unsigned char *, size_t, const Nbyte *);
 int hex_decode(Nbyte *, const unsigned char *);
 int hex_encode(unsigned char *, size_t, const Nbyte *);
 
 static const unsigned char b64[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=";
+static const unsigned char english[] = "etainoshrdlucmfwygpbvkqjxz";
 
 int bitmask(char *dst, size_t dst_lim, long x, size_t bit_n) {
 /* Used to determine bitmasks in b64_encode */
@@ -155,10 +163,98 @@ int nbyte_encode(unsigned char *dst, size_t dst_lim, const Nbyte *src, enum nbyt
 	if (NULL == src)
 		return 2;
 
-	fp = fmt == FMT_B64 ? b64_encode : hex_encode;
+	switch (fmt) {
+	case FMT_ASC:
+		fp = asc_encode;
+		break;
+	case FMT_B64:
+		fp = b64_encode;
+		break;
+	case FMT_HEX:
+		fp = hex_encode;
+		break;
+	default:
+		return 3;
+		break;
+	}
 
 	if (0 != fp(dst, dst_lim, src))
+		return 4;
+
+	return 0;
+}
+
+int nbyte_freq(size_t *dst, Nbyte *x) {
+	size_t score;
+	size_t i, j, n;
+
+	if (NULL == dst)
+		return 1;
+	if (NULL == x)
+		return 2;
+
+	n = strlen((char *)english);
+	score = 0;
+	for (i = 0; i < x->n; i++)
+		for (j = 0; j < n; j++)
+			if (english[j] == tolower(x->data[i]))
+				score++;
+
+	*dst = score;
+
+	return 0;
+}
+
+int nbyte_xor(Nbyte *dst, Nbyte *x, Nbyte *y) {
+/* Target will be as long as the shortest source */
+	size_t i;
+
+	if (NULL == dst)
+		return 1;
+	if (NULL == x)
+		return 2;
+	if (NULL == y)
 		return 3;
+
+	(void) nbyte_init(dst);
+
+	dst->n = x->n < y->n ? x->n : y->n;
+	for (i = 0; i < dst->n; i++)
+		dst->data[i] = x->data[i] ^ y->data[i];
+
+	return 0;
+}
+
+int nbyte_xorc(Nbyte *dst, Nbyte *x, char c) {
+	size_t i;
+
+	if (NULL == dst)
+		return 1;
+	if (NULL == x)
+		return 2;
+
+	(void) nbyte_init(dst);
+
+	dst->n = x->n;
+	for (i = 0; i < x->n; i++)
+		dst->data[i] = c ^ x->data[i];
+
+	return 0;
+}
+
+int asc_encode(unsigned char *dst, size_t dst_lim, const Nbyte *src) {
+	size_t i;
+
+	if (NULL == dst)
+		return 1;
+	if (NULL == src)
+		return 2;
+	if (src->n >= dst_lim)
+		return 3;
+
+	for (i = 0; i < src->n; i++)
+		dst[i] = src->data[i];
+	dst[i] = '\0';
 
 	return 0;
 }
@@ -282,8 +378,85 @@ void c_1(void) {
 	assert(0 == strcmp((char *)target, (char *)b));
 }
 
+/*
+	2. Fixed XOR
+
+	Write a function that takes two equal-length buffers and produces their XOR
+	combination.
+
+	If your function works properly, then when you feed it the string:
+
+		1c0111001f010100061a024b53535009181c
+
+	... after hex decoding, and when XOR'd against:
+
+		686974207468652062756c6c277320657965
+
+	... should produce:
+
+		746865206b696420646f6e277420706c6179
+*/
+void c_2(void) {
+	const unsigned char x[] = "1c0111001f010100061a024b53535009181c";
+	const unsigned char y[] = "686974207468652062756c6c277320657965";
+	const unsigned char target[] = "746865206b696420646f6e277420706c6179";
+	unsigned char h[BS];
+	Nbyte dt, dx, dy;
+
+	assert(0 == nbyte_decode(&dx, x, FMT_HEX));
+	assert(0 == nbyte_decode(&dy, y, FMT_HEX));
+
+	assert(0 == nbyte_xor(&dt, &dx, &dy));
+
+	assert(0 == nbyte_encode(h, BS, &dt, FMT_HEX));
+	assert(0 == strcmp((char *)target, (char *)h));
+}
+
+/*
+	3. Single-byte XOR cipher
+
+	The hex encoded string:
+
+		1b37373331363f78151b7f2b783431333d78397828372d363c78373e783a393b3736
+
+	... has been XOR'd against a single character. Find the key, decrypt the
+	message.
+
+	You can do this by hand. But don't: write code to do it for you.
+
+	How? Devise some method for "scoring" a piece of English plaintext. Character
+	frequency is a good metric. Evaluate each output and choose the one with the
+	best score.
+*/
+void c_3(void) {
+	const unsigned char x[] = "1b37373331363f78151b7f2b783431333d78397828372d363c78373e783a393b3736";
+	const unsigned char target[] = "Cooking MC's like a pound of bacon";
+	unsigned char h[BS];
+	Nbyte dt, dx;
+	size_t score, top, topc;
+	size_t i;
+
+	assert(0 == nbyte_decode(&dx, x, FMT_HEX));
+
+	score = top = topc = 0;
+	for (i = 0; i < 0x100; i++) {
+		assert(0 == nbyte_xorc(&dt, &dx, i));
+		assert(0 == nbyte_freq(&score, &dt));
+		if (top < score) {
+			top = score;
+			topc = i;
+		}
+	}
+	assert(0 == nbyte_xorc(&dt, &dx, topc));
+
+	assert(0 == nbyte_encode(h, BS, &dt, FMT_ASC));
+	assert(0 == strcmp((char *)target, (char *)h));
+}
+
 int main(void) {
 	c_1();
+	c_2();
+	c_3();
 
 	(void) printf("Success\n");
 
