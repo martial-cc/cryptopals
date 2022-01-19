@@ -25,6 +25,7 @@ DEALINGS IN THE SOFTWARE.
 #include <assert.h>
 #include <ctype.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #define BS 1024
@@ -60,6 +61,7 @@ int nbyte_encode(unsigned char *, size_t, const Nbyte *, enum nbyte_fmt);
 int nbyte_freq(size_t *, Nbyte *);
 int nbyte_xor(Nbyte *, Nbyte *, Nbyte *);
 int nbyte_xorc(Nbyte *, Nbyte *, char);
+int nbyte_xorscore(size_t *, size_t *, Nbyte *);
 
 int asc_encode(unsigned char *, size_t, const Nbyte *);
 int b64_encode(unsigned char *, size_t, const Nbyte *);
@@ -197,7 +199,7 @@ int nbyte_freq(size_t *dst, Nbyte *x) {
 	score = 0;
 	for (i = 0; i < x->n; i++)
 		for (j = 0; j < n; j++)
-			if (english[j] == tolower(x->data[i]))
+			if (english[j] == x->data[i])
 				score++;
 
 	*dst = score;
@@ -238,6 +240,38 @@ int nbyte_xorc(Nbyte *dst, Nbyte *x, char c) {
 	dst->n = x->n;
 	for (i = 0; i < x->n; i++)
 		dst->data[i] = c ^ x->data[i];
+
+	return 0;
+}
+
+int nbyte_xorscore(size_t *score, size_t *topc, Nbyte *src) {
+	Nbyte dt;
+	size_t top, tscore, ttopc;
+	size_t i;
+
+	if (NULL == score)
+		return 1;
+	if (NULL == topc)
+		return 2;
+	if (NULL == src)
+		return 3;
+
+	top = tscore = ttopc = 0;
+	for (i = 0; i < 0x100; i++) {
+		if (0 == isprint(i))
+			continue;
+		if (0 != nbyte_xorc(&dt, src, i))
+			return 4;
+		if (0 != nbyte_freq(&tscore, &dt))
+			return 5;
+		if (top < tscore) {
+			top = tscore;
+			ttopc = i;
+		}
+	}
+
+	*score = top;
+	*topc = ttopc;
 
 	return 0;
 }
@@ -433,30 +467,65 @@ void c_3(void) {
 	const unsigned char target[] = "Cooking MC's like a pound of bacon";
 	unsigned char h[BS];
 	Nbyte dt, dx;
-	size_t score, top, topc;
-	size_t i;
+	size_t c, score;
 
 	assert(0 == nbyte_decode(&dx, x, FMT_HEX));
 
-	score = top = topc = 0;
-	for (i = 0; i < 0x100; i++) {
-		assert(0 == nbyte_xorc(&dt, &dx, i));
-		assert(0 == nbyte_freq(&score, &dt));
-		if (top < score) {
-			top = score;
-			topc = i;
-		}
-	}
-	assert(0 == nbyte_xorc(&dt, &dx, topc));
+	assert(0 == nbyte_xorscore(&score, &c, &dx));
+	assert(0 == nbyte_xorc(&dt, &dx, c));
 
 	assert(0 == nbyte_encode(h, BS, &dt, FMT_ASC));
 	assert(0 == strcmp((char *)target, (char *)h));
+}
+
+/*
+	4. Detect single-character XOR
+
+	One of the 60-character strings in this file [1_4.txt] has been encrypted by
+	single-character XOR.
+
+	Find it.
+*/
+void c_4(void) {
+	const char fn[] = "1_4.txt";
+	const char target[] = "Now that the party is jumping\n";
+	static char line[BS];
+	static Nbyte x, y;
+	char *cp;
+	FILE *fp;
+	size_t c, score, top, topc;
+	size_t i;
+
+	fp = fopen(fn, "r");
+	if (NULL == fp) {
+		fprintf(stderr, "can't open file from working directory: %s\n", fn);
+		exit(1);
+	}
+
+	score = top = topc = 0;
+	for (i = 0; NULL != fgets(line, sizeof(line), fp); i++) {
+		cp = strchr(line, '\n');
+		if (NULL != cp)
+			*cp = '\0';
+		assert(0 == nbyte_decode(&x, (const unsigned char *)line, FMT_HEX));
+		assert(0 == nbyte_xorscore(&score, &c, &x));
+		if (top < score) {
+			assert(0 == nbyte_decode(&y, (const unsigned char *)line, FMT_HEX));
+			top = score;
+			topc = c;
+		}
+	}
+	assert(0 == nbyte_xorc(&x, &y, topc));
+
+	assert(0 == nbyte_encode((unsigned char *)line, BS, &x, FMT_ASC));
+	assert(0 == strcmp((char *)target, (char *)line));
 }
 
 int main(void) {
 	c_1();
 	c_2();
 	c_3();
+	c_4();
 
 	(void) printf("Success\n");
 
