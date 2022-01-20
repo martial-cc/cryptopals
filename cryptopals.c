@@ -61,8 +61,10 @@ int nbyte_encode(unsigned char *, size_t, const Nbyte *, enum nbyte_fmt);
 int nbyte_freq(size_t *, Nbyte *);
 int nbyte_xor(Nbyte *, Nbyte *, Nbyte *);
 int nbyte_xorc(Nbyte *, Nbyte *, char);
+int nbyte_xorkey(Nbyte *, Nbyte *, const unsigned char *);
 int nbyte_xorscore(size_t *, size_t *, Nbyte *);
 
+int asc_decode(Nbyte *, const unsigned char *);
 int asc_encode(unsigned char *, size_t, const Nbyte *);
 int b64_encode(unsigned char *, size_t, const Nbyte *);
 int hex_decode(Nbyte *, const unsigned char *);
@@ -149,10 +151,23 @@ int nbyte_decode(Nbyte *dst, const unsigned char *src, enum nbyte_fmt fmt) {
 
 	(void) nbyte_init(dst);
 
-	fp = fmt == FMT_B64 ? NULL : hex_decode;
+	switch (fmt) {
+	case FMT_ASC:
+		fp = asc_decode;
+		break;
+	case FMT_B64:
+		fp = NULL;
+		break;
+	case FMT_HEX:
+		fp = hex_decode;
+		break;
+	default:
+		return 4;
+		break;
+	}
 
 	if (0 != fp(dst, src))
-		return 4;
+		return 5;
 
 	return 0;
 }
@@ -244,6 +259,24 @@ int nbyte_xorc(Nbyte *dst, Nbyte *x, char c) {
 	return 0;
 }
 
+int nbyte_xorkey(Nbyte *dst, Nbyte *x, const unsigned char *key) {
+	size_t i, kn;
+
+	if (NULL == dst)
+		return 1;
+	if (NULL == x)
+		return 2;
+	if (NULL == key)
+		return 3;
+
+	dst->n = x->n;
+	kn = strlen((char *)key);
+	for (i = 0; i < x->n; i++)
+		dst->data[i] = key[i % kn] ^ x->data[i];
+
+	return 0;
+}
+
 int nbyte_xorscore(size_t *score, size_t *topc, Nbyte *src) {
 	Nbyte dt;
 	size_t top, tscore, ttopc;
@@ -272,6 +305,25 @@ int nbyte_xorscore(size_t *score, size_t *topc, Nbyte *src) {
 
 	*score = top;
 	*topc = ttopc;
+
+	return 0;
+}
+
+int asc_decode(Nbyte *dst, const unsigned char *src) {
+	size_t i, n;
+
+	if (NULL == dst)
+		return 1;
+	if (NULL == src)
+		return 2;
+
+	n = strlen((char *)src);
+	if (NBYTE_SIZE < n)
+		return 3;
+
+	dst->n = n;
+	for (i = 0; i < n; i++)
+		dst->data[i] = src[i];
 
 	return 0;
 }
@@ -489,8 +541,8 @@ void c_3(void) {
 void c_4(void) {
 	const char fn[] = "1_4.txt";
 	const char target[] = "Now that the party is jumping\n";
-	static char line[BS];
-	static Nbyte x, y;
+	char line[BS];
+	Nbyte x, y;
 	char *cp;
 	FILE *fp;
 	size_t c, score, top, topc;
@@ -521,11 +573,47 @@ void c_4(void) {
 	assert(0 == strcmp((char *)target, (char *)line));
 }
 
+/*
+	5. Implement repeating-key XOR
+
+	Here is the opening stanza of an important work of the English language:
+
+		Burning 'em, if you ain't quick and nimble
+		I go crazy when I hear a cymbal
+
+	Encrypt it, under the key "ICE", using repeating-key XOR.
+
+	In repeating-key XOR, you'll sequentially apply each byte of the key; the first
+	byte of plaintext will be XOR'd against I, the next C, the next E, then I again
+	for the 4th byte, and so on.
+
+	It should come out to:
+
+		0b3637272a2b2e63622c2e69692a23693a2a3c6324202d623d63343c2a26226324272765272
+		a282b2f20430a652e2c652a3124333a653e2b2027630c692b20283165286326302e27282f
+*/
+void c_5(void) {
+	const unsigned char x[] = "Burning 'em, if you ain't quick and nimble\nI go crazy when I hear a cymbal";
+	const unsigned char k[] = "ICE";
+	const unsigned char target[] = "0b3637272a2b2e63622c2e69692a23693a2a3c6324202d623d63343c2a2622632427276\
+5272a282b2f20430a652e2c652a3124333a653e2b2027630c692b20283165286326302e27282f";
+	unsigned char h[BS];
+	Nbyte dt, dx;
+
+	assert(0 == nbyte_decode(&dx, x, FMT_ASC));
+
+	assert(0 == nbyte_xorkey(&dt, &dx, k));
+
+	assert(0 == nbyte_encode(h, BS, &dt, FMT_HEX));
+	assert(0 == strcmp((char *)target, (char *)h));
+}
+
 int main(void) {
 	c_1();
 	c_2();
 	c_3();
 	c_4();
+	c_5();
 
 	(void) printf("Success\n");
 
