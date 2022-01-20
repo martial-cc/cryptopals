@@ -33,11 +33,13 @@ DEALINGS IN THE SOFTWARE.
 #define B64_LIM 64
 #define B64_N 4
 #define B64_WIDTH 6
+#define BYTE_LIM 0x100
 #define BYTE_N 3
 #define BYTE_WIDTH 8
 #define NBYTE_SIZE BS
 
 #define B64(i) (b64[B64_LIM - 1 & i])
+#define DB64(i) (db64[BYTE_LIM / 2 - 1 & i])
 
 enum nbyte_fmt {
 	FMT_ASC,
@@ -50,9 +52,8 @@ typedef struct {
 	int data[NBYTE_SIZE];
 } Nbyte;
 
-int bitmask(char *, size_t, long, size_t);
-int read_hex(int *, unsigned char);
-int write_hex(unsigned char *, int);
+int hex_read(int *, unsigned char);
+int hex_write(unsigned char *, int);
 
 int nbyte_init(Nbyte *);
 int nbyte_decode(Nbyte *, const unsigned char *, enum nbyte_fmt);
@@ -66,36 +67,25 @@ int nbyte_xorscore(size_t *, size_t *, Nbyte *);
 
 int asc_decode(Nbyte *, const unsigned char *);
 int asc_encode(unsigned char *, size_t, const Nbyte *);
+int b64_decode(Nbyte *, const unsigned char *);
 int b64_encode(unsigned char *, size_t, const Nbyte *);
 int hex_decode(Nbyte *, const unsigned char *);
 int hex_encode(unsigned char *, size_t, const Nbyte *);
 
 static const unsigned char b64[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=";
+static const int db64[] = {
+	-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+	-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+	-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 62, -1, -1, -1, 63,
+	52, 53, 54, 55, 56, 57, 58, 59, 60, 61, -1, -1, -1, 0, -1, -1,
+	0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14,
+	15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, -1, -1, -1, -1, -1,
+	-1, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40,
+	41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, -1, -1, -1, -1, -1
+};
 static const unsigned char english[] = "etainoshrdlucmfwygpbvkqjxz";
 
-int bitmask(char *dst, size_t dst_lim, long x, size_t bit_n) {
-/* Used to determine bitmasks in b64_encode */
-	const int bit_max = 32;
-	int bit;
-	size_t i;
-
-	if (NULL == dst)
-		return 1;
-	if (bit_max >= dst_lim)
-		return 2;
-	if (bit_n > bit_max)
-		return 3;
-
-	for (i = 0; i < bit_n; i++) {
-		bit = x & 1 << (bit_n - 1 - i);
-		dst[i] = !!bit + '0';
-	}
-	dst[i] = '\0';
-
-	return 0;
-}
-
-int read_hex(int *dst, unsigned char src) {
+int hex_read(int *dst, unsigned char src) {
 	int ret, tmp;
 
 	if (NULL == dst)
@@ -116,7 +106,7 @@ int read_hex(int *dst, unsigned char src) {
 	return 0;
 }
 
-int write_hex(unsigned char *dst, int src) {
+int hex_write(unsigned char *dst, int src) {
 	if (NULL == dst)
 		return 1;
 	if (0x10 <= src || 0 > src)
@@ -146,8 +136,6 @@ int nbyte_decode(Nbyte *dst, const unsigned char *src, enum nbyte_fmt fmt) {
 		return 1;
 	if (NULL == src)
 		return 2;
-	if (FMT_B64 == fmt)	/* remove this test when implemented */
-		return 3;
 
 	(void) nbyte_init(dst);
 
@@ -156,7 +144,7 @@ int nbyte_decode(Nbyte *dst, const unsigned char *src, enum nbyte_fmt fmt) {
 		fp = asc_decode;
 		break;
 	case FMT_B64:
-		fp = NULL;
+		fp = b64_decode;
 		break;
 	case FMT_HEX:
 		fp = hex_decode;
@@ -345,9 +333,35 @@ int asc_encode(unsigned char *dst, size_t dst_lim, const Nbyte *src) {
 	return 0;
 }
 
+int b64_decode(Nbyte *dst, const unsigned char *src) {
+	long buf;
+	size_t dst_i, i, j, n;
+
+	if (NULL == dst)
+		return 1;
+	if (NULL == src)
+		return 2;
+
+	n = strlen((char *)src);
+	if (NBYTE_SIZE < n / 4 * 3)
+		return 3;
+
+	buf = dst_i = 0;
+	for (i = j = 0; i < n; i++) {
+		buf += DB64(src[i]) << B64_WIDTH * (B64_N - 1 - j);
+		if (B64_N == ++j) {
+			for (j = BYTE_N; j > 0; j--)
+				dst->data[dst_i++] = BYTE_LIM - 1 & (buf >> BYTE_WIDTH * (j - 1));
+			buf = 0;
+		}
+	}
+	dst->n = dst_i;
+
+	return 0;
+}
+
 int b64_encode(unsigned char *dst, size_t dst_lim, const Nbyte *src) {
 /* Padding is not implemented, since the challenge doesn't require it */
-	const long mask[] = { 0x00fc0000, 0x0003f000, 0x00000fc0, 0x0000003f };
 	long buf;
 	size_t dst_i, i, j;
 
@@ -355,17 +369,16 @@ int b64_encode(unsigned char *dst, size_t dst_lim, const Nbyte *src) {
 		return 1;
 	if (NULL == src)
 		return 2;
-	if (src->n * 4 / 3 + 1 > dst_lim)	/* lazy */
+	if (src->n * 4 / 3 + 1 > dst_lim)
 		return 3;
 
-	buf = 0;
-	dst_i = 0;
+	buf = dst_i = 0;
 	for (i = j = 0; i < src->n; i++) {
 		buf += src->data[i] << BYTE_WIDTH * (BYTE_N - 1 - j);
 		if (BYTE_N == ++j) {
-			for (j = 0; j < B64_N; j++)
-				dst[dst_i++] = B64((buf & mask[j]) >> B64_WIDTH * (B64_N - 1 - j));
-			buf = j = 0;
+			for (j = B64_N; j > 0; j--)
+				dst[dst_i++] = B64(B64_LIM - 1 & (buf >> B64_WIDTH * (j - 1)));
+			buf = 0;
 		}
 	}
 	dst[dst_i] = '\0';
@@ -391,8 +404,8 @@ int hex_decode(Nbyte *dst, const unsigned char *src) {
 
 	dst->n = n / 2;
 	for (cp = src, i = 0; *cp != '\0'; ) {
-		if (0 != read_hex(&high, *cp++)
-		|| 0 != read_hex(&low, *cp++))
+		if (0 != hex_read(&high, *cp++)
+		|| 0 != hex_read(&low, *cp++))
 			return 5;
 		dst->data[i++] = 0x10 * high + low;
 	}
@@ -412,8 +425,8 @@ int hex_encode(unsigned char *dst, size_t dst_lim, const Nbyte *src) {
 		return 3;
 
 	for (cp = dst, i = 0; i < src->n; i++)
-		if (0 != write_hex(cp++, src->data[i] / 0x10)
-		|| 0 != write_hex(cp++, src->data[i] % 0x10))
+		if (0 != hex_write(cp++, src->data[i] / 0x10)
+		|| 0 != hex_write(cp++, src->data[i] % 0x10))
 			return 4;
 	*cp = '\0';
 
@@ -450,7 +463,8 @@ int hex_encode(unsigned char *dst, size_t dst_lim, const Nbyte *src) {
 	Always operate on raw bytes, never on encoded strings. Only use hex and base64 for pretty-printing.
 */
 void c_1(void) {
-	const unsigned char hex[] = "49276d206b696c6c696e6720796f757220627261696e206c696b65206120706f69736f6e6f7573206d757368726f6f6d";
+	const unsigned char hex[] = "49276d206b696c6c696e6720796f757220627261696e206c696b65206120706f6973\
+6f6e6f7573206d757368726f6f6d";
 	const unsigned char target[] = "SSdtIGtpbGxpbmcgeW91ciBicmFpbiBsaWtlIGEgcG9pc29ub3VzIG11c2hyb29t";
 	unsigned char b[BS], h[BS];
 	Nbyte dt;
